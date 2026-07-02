@@ -199,27 +199,58 @@ def select_smallest_stable_subset(X, y, groups, use_group_cv, n_splits, order,
 # Classifier + ensemble comparison
 # --------------------------------------------------------------------------
 
+try:
+    from catboost import CatBoostClassifier
+    HAS_CAT = True
+except ImportError:
+    HAS_CAT = False
+
 def get_candidate_models():
     models = {
         "RandomForest": RandomForestClassifier(
-            n_estimators=200, max_depth=7, min_samples_leaf=2,
-            class_weight="balanced", random_state=42, n_jobs=-1,
-        ),
+            n_estimators=600,
+            max_depth=None,
+            min_samples_leaf=1,
+            max_features="sqrt",
+            bootstrap=True,
+            class_weight="balanced_subsample",
+            random_state=42,
+            n_jobs=-1,
+        )
     }
     if HAS_XGB:
         models["XGBoost"] = XGBClassifier(
-            n_estimators=200, max_depth=4, learning_rate=0.08,
-            subsample=0.9, colsample_bytree=0.9,
-            eval_metric="logloss", random_state=42, n_jobs=-1,
+            n_estimators=500,
+            max_depth=5,
+            learning_rate=0.03,
+            subsample=0.8,
+            colsample_bytree=0.8,
         )
     else:
         print("  [info] xgboost not installed - skipping "
               "(pip install xgboost to include it)")
+    if HAS_CAT:
+        models["CatBoost"] = CatBoostClassifier(
+            iterations=1200,
+            depth=8,
+            learning_rate=0.02,
+            l2_leaf_reg=3,
+            random_strength=1,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            auto_class_weights="Balanced",
+            verbose=False,
+            random_seed=42
+        )
     if HAS_LGBM:
         models["LightGBM"] = LGBMClassifier(
-            n_estimators=200, max_depth=4, learning_rate=0.08,
-            subsample=0.9, colsample_bytree=0.9,
-            random_state=42, n_jobs=-1, verbose=-1,
+            n_estimators=600,
+            learning_rate=0.03,
+            num_leaves=31,
+            feature_fraction=0.8,
+            bagging_fraction=0.8,
+            bagging_freq=5,
+            random_state=42,
         )
     else:
         print("  [info] lightgbm not installed - skipping "
@@ -508,6 +539,7 @@ def main():
     feature_indices, curve, peak_acc = select_smallest_stable_subset(
         X, y, groups, use_group_cv, n_splits, order,
         tolerance=args.selection_tolerance)
+        
     # print a compact view of the accuracy-vs-feature-count curve
     for k, acc in curve:
         if k == feature_indices.__len__() or k % 5 == 0 or k == curve[-1][0]:
@@ -517,6 +549,9 @@ def main():
           f"(peak CV accuracy across all subset sizes was {peak_acc*100:.1f}%)")
 
     chosen_X = X[:, feature_indices]
+    # print("\nUsing ALL handcrafted features (feature selection disabled).")
+    # chosen_X = X
+    # feature_indices = list(range(X.shape[1]))
 
     print("\n" + "=" * 70)
     print("STAGE 3: Model Selection")

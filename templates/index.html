@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot the Fake Photo — Live Detector</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #E8ECEE;
+    --grid-line: rgba(16, 32, 43, 0.07);
+    --ink: #10202B;
+    --ink-soft: #4C5C66;
+    --panel: #F4F6F7;
+    --panel-line: #C3CCD1;
+    --accent-real: #1F8A70;
+    --accent-real-dim: #1F8A701a;
+    --accent-screen: #A93226;
+    --accent-screen-dim: #A932261a;
+    --mono: 'IBM Plex Mono', ui-monospace, monospace;
+    --sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    --radius: 3px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      linear-gradient(var(--grid-line) 1px, transparent 1px) 0 0 / 28px 28px,
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px) 0 0 / 28px 28px,
+      var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    display: flex;
+    justify-content: center;
+    padding: 28px 16px 60px;
+  }
+
+  .scope {
+    width: 100%;
+    max-width: 980px;
+  }
+
+  header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding-bottom: 18px;
+    margin-bottom: 22px;
+    border-bottom: 1px solid var(--panel-line);
+  }
+
+  .brand { display: flex; align-items: flex-start; gap: 12px; }
+
+  .brand-mark {
+    font-family: var(--mono);
+    font-size: 22px;
+    line-height: 1;
+    color: var(--accent-real);
+    border: 1px solid var(--panel-line);
+    background: var(--panel);
+    width: 40px; height: 40px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius);
+    flex-shrink: 0;
+  }
+
+  h1 {
+    font-family: var(--mono);
+    font-size: 16px;
+    letter-spacing: 0.06em;
+    margin: 2px 0 4px;
+    font-weight: 600;
+  }
+
+  .tagline {
+    margin: 0;
+    font-size: 13px;
+    color: var(--ink-soft);
+    max-width: 40ch;
+  }
+
+  .status {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-soft);
+    border: 1px solid var(--panel-line);
+    background: var(--panel);
+    padding: 5px 10px;
+    border-radius: var(--radius);
+    white-space: nowrap;
+    margin-top: 4px;
+  }
+
+  .status.live { color: var(--accent-real); border-color: var(--accent-real); }
+  .status.error { color: var(--accent-screen); border-color: var(--accent-screen); }
+
+  main {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 18px;
+  }
+
+  @media (max-width: 760px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  section {
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    border-radius: var(--radius);
+    padding: 16px;
+  }
+
+  .feed-panel {
+    position: relative;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 4 / 3;
+  }
+
+  video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+    display: block;
+    background: #0d1116;
+  }
+
+  .crosshair {
+    position: absolute;
+    inset: 12%;
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: var(--radius);
+    pointer-events: none;
+  }
+  .crosshair::before, .crosshair::after {
+    content: '';
+    position: absolute;
+    background: rgba(255,255,255,0.5);
+  }
+  .crosshair::before { top: 0; bottom: 0; left: 0; width: 1px; opacity: 0; }
+
+  .feed-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #0d1116;
+  }
+  .feed-overlay.hidden { display: none; }
+
+  button {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    background: var(--accent-real);
+    color: #fff;
+    border: none;
+    padding: 11px 20px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: filter 0.15s ease;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+  button.stop { background: var(--accent-screen); }
+
+  .readout-panel { display: flex; flex-direction: column; gap: 18px; }
+
+  .verdict-block { display: flex; align-items: baseline; justify-content: space-between; }
+  .verdict-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    color: var(--ink-soft); text-transform: uppercase;
+  }
+  .verdict-value {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 600;
+    transition: color 0.2s ease;
+  }
+  .verdict-value.real { color: var(--accent-real); }
+  .verdict-value.screen { color: var(--accent-screen); }
+
+  .meter-labels {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em;
+    color: var(--ink-soft); margin-bottom: 6px;
+  }
+
+  .meter-track {
+    position: relative;
+    height: 14px;
+    border-radius: var(--radius);
+    background: linear-gradient(90deg, var(--accent-real-dim), var(--accent-screen-dim));
+    border: 1px solid var(--panel-line);
+    overflow: visible;
+  }
+
+  .meter-fill {
+    position: absolute;
+    top: -3px; bottom: -3px;
+    width: 3px;
+    background: var(--ink);
+    border-radius: 2px;
+    left: 0%;
+    transition: left 0.35s cubic-bezier(.2,.7,.3,1);
+  }
+
+  .meter-threshold {
+    position: absolute;
+    top: -6px; bottom: -6px;
+    width: 1px;
+    background: var(--ink-soft);
+    left: 50%;
+  }
+  .meter-threshold::after {
+    content: attr(data-label);
+    position: absolute;
+    top: -16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--ink-soft);
+    white-space: nowrap;
+  }
+
+  .meter-value {
+    margin-top: 10px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--ink-soft);
+  }
+
+  .signals-title {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+    color: var(--ink-soft); text-transform: uppercase; margin-bottom: 10px;
+  }
+
+  .signal-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .signal-name {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
+  }
+  .signal-bar {
+    height: 6px;
+    background: #dfe4e6;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .signal-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--ink-soft);
+    transition: width 0.35s ease;
+  }
+
+  .meta-row {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
+    border-top: 1px dashed var(--panel-line);
+    padding-top: 12px;
+  }
+
+  footer {
+    margin-top: 24px;
+    font-size: 12px;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+  footer code {
+    font-family: var(--mono);
+    background: var(--panel);
+    border: 1px solid var(--panel-line);
+    padding: 1px 5px;
+    border-radius: 2px;
+  }
+
+  .banner {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--accent-screen-dim);
+    border: 1px solid var(--accent-screen);
+    color: var(--accent-screen);
+    padding: 10px 14px;
+    border-radius: var(--radius);
+    margin-bottom: 18px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="scope">
+
+  {% if model_missing %}
+  <div class="banner">
+    model.pkl not found. Run <code>python augment.py --data_dir data --out_dir data_augmented</code>
+    then <code>python train.py --data_dir data_augmented --group_cv</code> in this folder, then reload this page.
+  </div>
+  {% endif %}
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark">&#9678;</div>
+      <div>
+        <h1>SPOT THE FAKE PHOTO</h1>
+        <p class="tagline">live recapture detector — handcrafted-feature classifier, running locally, nothing leaves this machine</p>
+      </div>
+    </div>
+    <div class="status" id="status">camera idle</div>
+  </header>
+
+  <main>
+    <section class="feed-panel">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" hidden></canvas>
+      <div class="crosshair" aria-hidden="true"></div>
+      <div class="feed-overlay" id="feedOverlay">
+        <button id="startBtn">start camera</button>
+      </div>
+    </section>
+
+    <section class="readout-panel">
+      <div class="verdict-block">
+        <div>
+          <div class="verdict-label">verdict</div>
+          <div class="verdict-value" id="verdict">—</div>
+        </div>
+        <button id="stopBtn" class="stop" style="display:none;">stop</button>
+      </div>
+
+      <div>
+        <div class="meter-labels"><span>REAL</span><span>SCREEN</span></div>
+        <div class="meter-track">
+          <div class="meter-fill" id="meterFill"></div>
+          <div class="meter-threshold" id="meterThreshold" data-label="cutoff"></div>
+        </div>
+        <div class="meter-value" id="scoreValue">P(screen) = —</div>
+      </div>
+
+      <div>
+        <div class="signals-title">signal readouts</div>
+        <div class="signal-row"><span class="signal-name">jpeg blockiness</span><div class="signal-bar"><div class="signal-bar-fill" data-signal="jpeg_blockiness"></div></div></div>
+        <div class="signal-row"><span class="signal-name">glare ratio</span><div class="signal-bar"><div class="signal-bar-fill" data-signal="glare_ratio"></div></div></div>
+        <div class="signal-row"><span class="signal-name">fft high-freq</span><div class="signal-bar"><div class="signal-bar-fill" data-signal="fft_high_freq_ratio"></div></div></div>
+        <div class="signal-row"><span class="signal-name">texture regularity</span><div class="signal-bar"><div class="signal-bar-fill" data-signal="lbp_uniform_ratio"></div></div></div>
+      </div>
+
+      <div class="meta-row">
+        <span id="latency">latency: — ms</span>
+        <span id="modelInfo">model: —</span>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <p>runs the same <code>extract_features.py</code> + <code>model.pkl</code> trained by <code>train.py</code> on your own photos — no CNN, no cloud call, nothing saved to disk.</p>
+  </footer>
+</div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const feedOverlay = document.getElementById('feedOverlay');
+const statusEl = document.getElementById('status');
+const verdictEl = document.getElementById('verdict');
+const meterFill = document.getElementById('meterFill');
+const meterThreshold = document.getElementById('meterThreshold');
+const scoreValueEl = document.getElementById('scoreValue');
+const latencyEl = document.getElementById('latency');
+const modelInfoEl = document.getElementById('modelInfo');
+
+let stream = null;
+let loopHandle = null;
+let busy = false;
+let threshold = 0.5;
+
+// ---------- Prediction smoothing ----------
+const HISTORY_SIZE = 8;
+let scoreHistory = [];
+let stableLabel = null;
+
+// Hysteresis thresholds
+const SCREEN_THRESHOLD = 0.60;
+const REAL_THRESHOLD = 0.40;
+
+const CAPTURE_WIDTH = 480;
+const INTERVAL_MS = 900;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/status');
+    const data = await res.json();
+    if (data.ready) {
+      threshold = data.threshold ?? 0.5;
+      meterThreshold.style.left = (threshold * 100) + '%';
+      const acc = data.cv_accuracy != null ? (data.cv_accuracy * 100).toFixed(1) + '%' : '—';
+      modelInfoEl.textContent = `model: ${data.model_name} (cv ${acc})`;
+    } else {
+      modelInfoEl.textContent = 'model: not trained yet';
+    }
+  } catch (e) {
+    modelInfoEl.textContent = 'model: status unavailable';
+  }
+}
+
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false,
+    });
+  } catch (e) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    } catch (e2) {
+      setStatus('camera permission denied', 'error');
+      return;
+    }
+  }
+  video.srcObject = stream;
+  feedOverlay.classList.add('hidden');
+  stopBtn.style.display = 'inline-block';
+  setStatus('camera live', 'live');
+  loopHandle = setInterval(captureAndPredict, INTERVAL_MS);
+}
+
+function stopCamera() {
+  if (loopHandle) clearInterval(loopHandle);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+  feedOverlay.classList.remove('hidden');
+  stopBtn.style.display = 'none';
+  scoreHistory = [];
+  stableLabel = null;
+  setStatus('camera idle');
+  verdictEl.textContent = '—';
+  verdictEl.className = 'verdict-value';
+  meterFill.style.left = '0%';
+  scoreValueEl.textContent = 'P(screen) = —';
+  latencyEl.textContent = 'latency: — ms';
+}
+
+function captureAndPredict() {
+  if (busy || !video.videoWidth) return;
+  busy = true;
+
+  const scale = CAPTURE_WIDTH / video.videoWidth;
+  canvas.width = CAPTURE_WIDTH;
+  canvas.height = video.videoHeight * scale;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+
+  fetch('/predict', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: dataUrl }),
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.error) {
+        setStatus(data.error, 'error');
+        return;
+      }
+      updateReadout(data);
+      setStatus('camera live', 'live');
+    })
+    .catch(() => setStatus('server unreachable', 'error'))
+    .finally(() => { busy = false; });
+}
+
+function updateReadout(data) {
+
+    // -----------------------------
+    // Moving average
+    // -----------------------------
+    scoreHistory.push(data.score);
+
+    if (scoreHistory.length > HISTORY_SIZE)
+        scoreHistory.shift();
+
+    const smoothScore = scoreHistory.reduce((a, b) => a + b, 0) / scoreHistory.length;
+
+    // -----------------------------
+    // Hysteresis
+    // -----------------------------
+    if (stableLabel === null) {
+        stableLabel = smoothScore >= threshold ? "SCREEN" : "REAL";
+    } else if (stableLabel === "REAL") {
+        if (smoothScore >= SCREEN_THRESHOLD)
+            stableLabel = "SCREEN";
+    } else {
+        if (smoothScore <= REAL_THRESHOLD)
+            stableLabel = "REAL";
+    }
+
+    // -----------------------------
+    // Update UI
+    // -----------------------------
+    meterFill.style.left = (smoothScore * 100).toFixed(1) + "%";
+
+    scoreValueEl.textContent =
+        `P(screen) = ${smoothScore.toFixed(3)}`;
+
+    latencyEl.textContent =
+        `latency: ${data.latency_ms.toFixed(0)} ms`;
+
+    verdictEl.textContent = stableLabel;
+
+    verdictEl.className =
+        "verdict-value " +
+        (stableLabel === "SCREEN" ? "screen" : "real");
+
+    if (data.threshold != null) {
+      threshold = data.threshold;
+      meterThreshold.style.left = (threshold * 100) + "%";
+    }
+
+    (data.signals || []).forEach(sig => {
+        const bar = document.querySelector(
+            `.signal-bar-fill[data-signal="${sig.name}"]`
+        );
+
+        if (bar) {
+            bar.style.width = (sig.normalized * 100).toFixed(0) + "%";
+
+            bar.style.background =
+                sig.normalized > 0.6
+                    ? "var(--accent-screen)"
+                    : "var(--accent-real)";
+        }
+    });
+}
+
+startBtn.addEventListener('click', startCamera);
+stopBtn.addEventListener('click', stopCamera);
+loadStatus();
+</script>
+</body>
+</html>

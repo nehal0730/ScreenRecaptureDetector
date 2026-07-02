@@ -23,6 +23,7 @@ import time
 
 import joblib
 import numpy as np
+import cv2
 
 from extract_features import extract_features
 # needed so joblib can unpickle an EnsembleModel if that's what was saved
@@ -33,16 +34,70 @@ def load_model(path="model.pkl"):
     bundle = joblib.load(path)
     return bundle
 
+def five_crops(img):
+    h, w = img.shape[:2]
+
+    ch = int(h * 0.8)
+    cw = int(w * 0.8)
+
+    crops = []
+
+    # Center
+    y = (h - ch) // 2
+    x = (w - cw) // 2
+    crops.append(img[y:y+ch, x:x+cw])
+
+    # Top-left
+    crops.append(img[0:ch, 0:cw])
+
+    # Top-right
+    crops.append(img[0:ch, w-cw:w])
+
+    # Bottom-left
+    crops.append(img[h-ch:h, 0:cw])
+
+    # Bottom-right
+    crops.append(img[h-ch:h, w-cw:w])
+
+    return crops
+
+# def predict(image_path, bundle):
+#     feats = extract_features(image_path)
+#     feature_indices = bundle.get("feature_indices")
+#     if feature_indices is not None:
+#         feats = feats[feature_indices]
+#     feats = feats.reshape(1, -1)
+#     feats_s = bundle["scaler"].transform(feats)
+#     prob_screen = bundle["model"].predict_proba(feats_s)[0, 1]
+#     return float(prob_screen)
 
 def predict(image_path, bundle):
-    feats = extract_features(image_path)
-    feature_indices = bundle.get("feature_indices")
-    if feature_indices is not None:
-        feats = feats[feature_indices]
-    feats = feats.reshape(1, -1)
-    feats_s = bundle["scaler"].transform(feats)
-    prob_screen = bundle["model"].predict_proba(feats_s)[0, 1]
-    return float(prob_screen)
+    img = cv2.imread(image_path)
+
+    if img is None:
+        raise ValueError("Could not read image")
+
+    probs = []
+
+    # Original image
+    images = [img]
+
+    # Five crops
+    images.extend(five_crops(img))
+
+    for im in images:
+        feats = extract_features(im)
+
+        feature_indices = bundle.get("feature_indices")
+        if feature_indices is not None:
+            feats = feats[feature_indices]
+
+        feats = feats.reshape(1, -1)
+        feats_s = bundle["scaler"].transform(feats)
+        p = bundle["model"].predict_proba(feats_s)[0, 1]
+        probs.append(p)
+
+    return float(np.mean(probs))
 
 
 def main():

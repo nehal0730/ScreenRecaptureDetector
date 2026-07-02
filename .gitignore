@@ -15,7 +15,7 @@ env/
 # =========================
 # Model Files
 # =========================
-model.pkl
+*.pkl
 *.joblib
 
 # =========================
@@ -28,6 +28,8 @@ data_augmented/
 # Error Analysis Outputs
 # =========================
 error_analysis/
+
+catboost_info/
 
 # =========================
 # Jupyter
