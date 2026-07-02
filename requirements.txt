@@ -1,0 +1,22 @@
+# Core pipeline (required) - handcrafted features + RandomForest
+opencv-python
+numpy
+scikit-learn
+scikit-image
+scipy
+joblib
+matplotlib
+
+# Live camera demo (app.py + templates/index.html)
+flask
+
+# Optional - only needed if you want the classifier comparison to include
+# these (train.py auto-detects and skips gracefully if absent)
+xgboost
+lightgbm
+
+# Optional - only needed for hybrid_cnn.py (experimental, not the
+# recommended default - see note.md)
+# torch
+# torchvision
+# pillow
