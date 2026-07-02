@@ -1,22 +1,37 @@
 """
 train.py
 --------
-Full pipeline:
-  1. Extract features (41-dim) from data_dir/real and data_dir/screen.
-  2. Rank feature importance and compare full vs. reduced feature set
-     (drop the low-value tail) - keep whichever is smaller without
-     costing meaningful accuracy.
-  3. Compare classifiers (RandomForest, XGBoost/LightGBM if installed)
-     via GroupKFold (grouped by source photo, so augmented copies never
-     split across train/test - avoids inflated/dishonest accuracy).
-  4. Compare individual models vs. soft-voting vs. accuracy-weighted
-     averaging; keep whichever wins.
-  5. Optimize the decision threshold (accuracy / F1 / balanced accuracy)
-     on out-of-fold probabilities instead of assuming 0.5.
-  6. Save error analysis: confusion matrix, ROC curve, PR curve, feature
-     importance plot, and copies of misclassified images.
-  7. Calibrate probabilities (Platt/sigmoid via CalibratedClassifierCV,
-     itself using grouped CV to avoid leakage) and save the final model.
+Trains the full inference pipeline used by predict.py / app.py:
+
+    Preprocessing -> Feature Extraction -> Feature Selection ->
+    Model Selection -> Probability Calibration -> Threshold Optimization
+    -> Prediction
+
+  STAGE 1 - Preprocessing (preprocessing.py): load, validate (reject
+      corrupted/too-small/blank files), normalize color format (grayscale
+      / RGBA -> BGR), resize+letterbox to a fixed resolution regardless of
+      portrait/landscape orientation.
+  STAGE 1b - Feature Extraction (extract_features.py): 41 handcrafted
+      features computed on the clean, preprocessed image.
+  STAGE 2 - Feature Selection: rank features by RandomForest importance,
+      then search for the SMALLEST feature subset whose cross-validated
+      accuracy is within a small tolerance of the best accuracy any subset
+      size achieves - not a fixed importance percentage.
+  STAGE 3 - Model Selection: compare RandomForest, XGBoost, LightGBM (if
+      installed), plus soft-voting and accuracy-weighted ensembles of
+      them, via GroupKFold (grouped by source photo, so augmented copies
+      never leak across train/test) - keep whichever wins.
+  STAGE 4 - Probability Calibration: wrap the winner in
+      CalibratedClassifierCV (Platt/sigmoid scaling).
+  STAGE 5 - Threshold Optimization: search for the decision threshold
+      that maximizes balanced accuracy (also reports accuracy/F1-optimal
+      thresholds) instead of assuming 0.5.
+  (STAGE 6 - Prediction happens in predict.py / app.py at inference time,
+      using everything saved to model.pkl by this script.)
+
+Also writes error-analysis artifacts (confusion matrix, ROC, PR curve,
+probability distribution, feature importance plot, misclassified images)
+so failure modes are visible, not just a single accuracy number.
 
 Usage:
     python augment.py --data_dir data --out_dir data_augmented
@@ -48,6 +63,7 @@ from sklearn.preprocessing import StandardScaler
 
 from extract_features import extract_features, FEATURE_NAMES
 from ensemble import EnsembleModel
+import preprocessing
 
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG")
 
@@ -100,15 +116,25 @@ def source_group_id(path):
 
 def build_dataset(data_dir, augment=False):
     X, y, groups, paths_out = [], [], [], []
+    n_skipped = 0
     for label, folder_name in ((0, "real"), (1, "screen")):
         folder = os.path.join(data_dir, folder_name)
         paths = load_paths(folder)
         print(f"  {folder_name}: {len(paths)} images")
         for p in paths:
-            img = cv2.imread(p)
-            if img is None:
-                print(f"  [skip, unreadable] {p}")
+            # Stage 1 (Preprocessing) robustness check: reject corrupted,
+            # unreadable, degenerate, or too-small files before they ever
+            # reach feature extraction, instead of letting a bad file
+            # crash the whole training run.
+            try:
+                img = preprocessing.load_image(p)
+                img = preprocessing.normalize_color(img)
+                img = preprocessing.validate_content(img, source_label=p)
+            except preprocessing.ImageValidationError as e:
+                print(f"  [skip, invalid] {e}")
+                n_skipped += 1
                 continue
+
             variants = [(img, p)]
             if augment:
                 variants += [(v, p) for v in augment_image(img)]
@@ -119,6 +145,8 @@ def build_dataset(data_dir, augment=False):
                 y.append(label)
                 groups.append(gid)
                 paths_out.append(src_path)
+    if n_skipped:
+        print(f"  Skipped {n_skipped} invalid/corrupted image(s) total.")
     return np.array(X), np.array(y), np.array(groups), paths_out
 
 
@@ -136,13 +164,35 @@ def rank_feature_importance(Xs, y):
     return order, rf.feature_importances_
 
 
-def select_top_features(order, importances, cum_threshold=0.90):
-    total = importances.sum() + 1e-12
-    cum = np.cumsum(importances[order]) / total
-    k = int(np.searchsorted(cum, cum_threshold) + 1)
-    k = max(k, 5)  # never go below a small floor
-    keep_idx = sorted(order[:k].tolist())
-    return keep_idx
+def select_smallest_stable_subset(X, y, groups, use_group_cv, n_splits, order,
+                                   tolerance=0.005, min_features=3):
+    """Instead of a fixed cumulative-importance cutoff, actually search for
+    the smallest feature count whose cross-validated accuracy is within
+    `tolerance` of the best accuracy achieved by any prefix of the
+    importance-ranked feature list. Uses a fast RandomForest as the search
+    proxy (the real model/ensemble comparison happens afterward, only on
+    the winning subset) - cheap enough to evaluate every feature count on
+    a dataset this size, so no need to approximate with a fixed threshold."""
+    proxy = RandomForestClassifier(
+        n_estimators=150, max_depth=7, min_samples_leaf=2,
+        class_weight="balanced", random_state=42, n_jobs=-1,
+    )
+    ks = list(range(min_features, len(order) + 1))
+    accs = []
+    for k in ks:
+        idx = sorted(order[:k].tolist())
+        scaler = StandardScaler()
+        Xk_s = scaler.fit_transform(X[:, idx])
+        probs = cv_probs(proxy, Xk_s, y, groups, use_group_cv, n_splits)
+        accs.append(accuracy_score(y, (probs >= 0.5).astype(int)))
+    accs = np.array(accs)
+    best_acc = accs.max()
+    stable = accs >= (best_acc - tolerance)
+    chosen_pos = int(np.argmax(stable))  # first k within tolerance of the peak
+    chosen_k = ks[chosen_pos]
+    keep_idx = sorted(order[:chosen_k].tolist())
+    curve = list(zip(ks, accs.tolist()))
+    return keep_idx, curve, best_acc
 
 
 # --------------------------------------------------------------------------
@@ -319,6 +369,23 @@ def error_analysis(y, probs, threshold, paths, out_dir):
     return roc_auc
 
 
+def plot_probability_distribution(y, probs, threshold, out_dir):
+    fig, ax = plt.subplots(figsize=(5, 4))
+    bins = np.linspace(0, 1, 31)
+    ax.hist(probs[y == 0], bins=bins, alpha=0.6, label="real", color="#1F8A70")
+    ax.hist(probs[y == 1], bins=bins, alpha=0.6, label="screen", color="#A93226")
+    ax.axvline(threshold, color="black", linestyle="--", linewidth=1,
+               label=f"threshold={threshold:.2f}")
+    ax.set_xlabel("P(screen)")
+    ax.set_ylabel("count")
+    ax.set_title("Predicted probability distribution by true class")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(os.path.join(out_dir, "probability_distribution.png"), dpi=120)
+    plt.close(fig)
+    print(f"  Probability distribution plot -> {out_dir}/probability_distribution.png")
+
+
 def plot_feature_importance(names, importances, out_dir, top_n=20):
     order = np.argsort(-importances)[:top_n]
     fig, ax = plt.subplots(figsize=(6, max(4, top_n * 0.28)))
@@ -386,7 +453,11 @@ def build_final_model(result, X, y, groups, use_group_cv):
 # --------------------------------------------------------------------------
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=(
+        "Inference pipeline this trains: Preprocessing -> Feature Extraction "
+        "-> Feature Selection -> Model Selection -> Probability Calibration "
+        "-> Threshold Optimization -> Prediction. See note.md for details."
+    ))
     ap.add_argument("--data_dir", default="data")
     ap.add_argument("--augment", action="store_true",
                      help="apply quick in-memory augmentation (use with raw data/)")
@@ -394,11 +465,14 @@ def main():
                      help="force group-aware CV (auto-enabled if augmented data is detected)")
     ap.add_argument("--out", default="model.pkl")
     ap.add_argument("--error_dir", default="error_analysis")
-    ap.add_argument("--feature_cum_importance", type=float, default=0.90,
-                     help="cumulative importance threshold for feature selection")
+    ap.add_argument("--selection_tolerance", type=float, default=0.005,
+                     help="keep the smallest feature subset within this much "
+                          "accuracy of the best subset found (default 0.5pp)")
     args = ap.parse_args()
 
-    print("Loading + extracting features...")
+    print("=" * 70)
+    print("STAGE 1: Preprocessing + Feature Extraction")
+    print("=" * 70)
     t0 = time.time()
     X, y, groups, paths = build_dataset(args.data_dir, augment=args.augment)
     n_unique_sources = len(set(groups))
@@ -417,8 +491,10 @@ def main():
         print(f"Using GroupKFold ({n_splits}-fold, grouped by source photo) "
               f"to avoid train/test leakage between augmented copies.")
 
-    # ---- Feature importance + selection ----
-    print("\nRanking feature importance (full feature set)...")
+    print("\n" + "=" * 70)
+    print("STAGE 2: Feature Selection")
+    print("=" * 70)
+    print("Ranking feature importance (full feature set)...")
     scaler_full = StandardScaler()
     Xs_full = scaler_full.fit_transform(X)
     order, importances = rank_feature_importance(Xs_full, y)
@@ -426,27 +502,26 @@ def main():
     for i in order[:10]:
         print(f"  {FEATURE_NAMES[i]:26s} {importances[i]:.3f}")
 
-    keep_idx = select_top_features(order, importances, args.feature_cum_importance)
-    print(f"\nFeature selection: keeping {len(keep_idx)}/{len(FEATURE_NAMES)} features "
-          f"(>= {args.feature_cum_importance*100:.0f}% cumulative importance)")
+    print(f"\nSearching for the smallest feature subset within "
+          f"{args.selection_tolerance*100:.1f}pp of peak CV accuracy "
+          f"(not a fixed importance percentage)...")
+    feature_indices, curve, peak_acc = select_smallest_stable_subset(
+        X, y, groups, use_group_cv, n_splits, order,
+        tolerance=args.selection_tolerance)
+    # print a compact view of the accuracy-vs-feature-count curve
+    for k, acc in curve:
+        if k == feature_indices.__len__() or k % 5 == 0 or k == curve[-1][0]:
+            marker = "  <- chosen" if k == len(feature_indices) else ""
+            print(f"  {k:2d} features: {acc*100:5.1f}%{marker}")
+    print(f">> Selected {len(feature_indices)}/{len(FEATURE_NAMES)} features "
+          f"(peak CV accuracy across all subset sizes was {peak_acc*100:.1f}%)")
 
-    # ---- Compare full vs reduced feature set ----
-    print("\nEvaluating FULL feature set:")
-    result_full = evaluate_feature_set(X, y, groups, use_group_cv, n_splits, "full")
-    print("\nEvaluating REDUCED feature set:")
-    X_reduced = X[:, keep_idx]
-    result_reduced = evaluate_feature_set(X_reduced, y, groups, use_group_cv, n_splits, "reduced")
+    chosen_X = X[:, feature_indices]
 
-    # prefer the reduced set unless it's meaningfully worse (>0.5pp)
-    if result_reduced["best_acc"] >= result_full["best_acc"] - 0.005:
-        print(f"\n>> Using REDUCED feature set ({len(keep_idx)} features): "
-              f"{result_reduced['best_acc']*100:.1f}% vs full "
-              f"{result_full['best_acc']*100:.1f}%")
-        chosen_X, result, feature_indices = X_reduced, result_reduced, keep_idx
-    else:
-        print(f"\n>> Using FULL feature set: reduced set cost too much accuracy "
-              f"({result_reduced['best_acc']*100:.1f}% vs {result_full['best_acc']*100:.1f}%)")
-        chosen_X, result, feature_indices = X, result_full, list(range(len(FEATURE_NAMES)))
+    print("\n" + "=" * 70)
+    print("STAGE 3: Model Selection")
+    print("=" * 70)
+    result = evaluate_feature_set(chosen_X, y, groups, use_group_cv, n_splits, "selected")
 
     best_name = result["best_name"]
     best_probs = result["oof_probs"][best_name]
@@ -455,31 +530,30 @@ def main():
     print(classification_report(y, (best_probs >= 0.5).astype(int),
                                  target_names=["real", "screen"]))
 
-    # ---- Threshold optimization ----
+    print("\n" + "=" * 70)
+    print("STAGE 4/5: Probability Calibration + Threshold Optimization")
+    print("=" * 70)
     thresholds = optimize_threshold(y, best_probs)
-    print("Threshold optimization (on out-of-fold probabilities):")
+    print("Threshold search (on out-of-fold probabilities):")
     for metric, (t, val) in thresholds.items():
         print(f"  best {metric:18s}: threshold={t:.2f}  {metric}={val*100:.1f}%")
     chosen_threshold = thresholds["balanced_accuracy"][0]
     print(f"  -> using balanced-accuracy-optimal threshold: {chosen_threshold:.2f} "
           f"(default was 0.5)")
 
-    # ---- Error analysis ----
+    print("\n" + "=" * 70)
+    print("Error analysis")
+    print("=" * 70)
     os.makedirs(args.error_dir, exist_ok=True)
     roc_auc = error_analysis(y, best_probs, chosen_threshold, paths, args.error_dir)
     print(f"  ROC AUC: {roc_auc:.3f}")
+    plot_probability_distribution(y, best_probs, chosen_threshold, args.error_dir)
 
     selected_names = [FEATURE_NAMES[i] for i in feature_indices]
-    if hasattr(result["candidates"].get(best_name), "feature_importances_") or \
-       best_name in result["candidates"]:
-        # importance for plotting: use the single-model importances if
-        # available, else fall back to full-set RF importances restricted
-        # to the selected features
-        plot_feature_importance(selected_names,
-                                 importances[feature_indices], args.error_dir)
+    plot_feature_importance(selected_names, importances[feature_indices], args.error_dir)
 
-    # ---- Calibrate + fit final model on ALL data ----
-    print("\nCalibrating probabilities and fitting final model on all data...")
+    print("\nCalibrating probabilities (Platt/sigmoid) and fitting final model "
+          "on all data...")
     final_model = build_final_model(result, chosen_X, y, groups, use_group_cv)
 
     joblib.dump({
@@ -493,6 +567,9 @@ def main():
         "operating_threshold": chosen_threshold,
         "group_cv": use_group_cv,
         "calibrated": True,
+        "pipeline": "Preprocessing -> Feature Extraction -> Feature Selection "
+                    "-> Model Selection -> Probability Calibration -> "
+                    "Threshold Optimization -> Prediction",
     }, args.out)
 
     size_kb = os.path.getsize(args.out) / 1024

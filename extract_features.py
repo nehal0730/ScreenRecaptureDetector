@@ -85,9 +85,7 @@ import numpy as np
 from scipy.stats import skew, kurtosis
 from skimage.feature import local_binary_pattern, graycomatrix, graycoprops
 
-TARGET_SIZE = 256  # resize (with padding) so FFT bins are comparable across images
-                    # (256 chosen for speed; still plenty of resolution for
-                    # frequency/texture statistics - see note.md for the tradeoff)
+from preprocessing import preprocess_image, TARGET_SIZE, ImageValidationError  # noqa: F401
 
 GLCM_LEVELS = 32   # quantize grayscale to this many levels before GLCM
                     # (keeps the co-occurrence matrix small -> fast)
@@ -136,20 +134,6 @@ FEATURE_NAMES = [
     "local_contrast_mean",
     "local_contrast_std",
 ]
-
-
-def _resize_pad(img, size=TARGET_SIZE):
-    h, w = img.shape[:2]
-    scale = size / max(h, w)
-    nh, nw = int(h * scale), int(w * scale)
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-    top = (size - nh) // 2
-    bottom = size - nh - top
-    left = (size - nw) // 2
-    right = size - nw - left
-    padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
-                                 cv2.BORDER_REFLECT)
-    return padded
 
 
 def _fft_features(gray):
@@ -315,14 +299,12 @@ def _local_contrast(gray, block=16):
 
 
 def extract_features(image_path_or_array):
-    if isinstance(image_path_or_array, str):
-        img = cv2.imread(image_path_or_array)
-        if img is None:
-            raise ValueError(f"Could not read image: {image_path_or_array}")
-    else:
-        img = image_path_or_array
-
-    img = _resize_pad(img)
+    """Stage 2 of the pipeline (Feature Extraction). Expects to receive
+    whatever a file path or an already-decoded array points to; all
+    loading/validation/color-normalization/resizing happens in
+    preprocess_image() (preprocessing.py, Stage 1) so this function can
+    assume a clean (TARGET_SIZE, TARGET_SIZE, 3) uint8 BGR image."""
+    img = preprocess_image(image_path_or_array)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 

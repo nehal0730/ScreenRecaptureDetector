@@ -166,6 +166,60 @@ couldn't test the actual browser camera capture there (no camera/browser
 in this environment), so give `getUserMedia` permission a check the first
 time you open it locally.
 
+## The inference pipeline, explicitly
+```
+Preprocessing -> Feature Extraction -> Feature Selection -> Model Selection
+-> Probability Calibration -> Threshold Optimization -> Prediction
+```
+- **Preprocessing** (`preprocessing.py`, new): load (path or already-decoded
+  array) -> validate (reject corrupted/unreadable/too-small/blank images
+  with a clear error instead of crashing) -> normalize color format
+  (grayscale, RGBA/BGRA-with-alpha -> BGR) -> letterbox-resize to a fixed
+  256×256 working resolution, which also makes portrait/landscape behave
+  identically without separate orientation logic. Both `train.py`'s batch
+  loader and `app.py`'s live camera frames go through the exact same
+  function, so robustness guarantees are shared, not duplicated.
+- **Feature Extraction**: unchanged, 41 features (see above).
+- **Feature Selection** (improved): previously used a fixed 90%
+  cumulative-importance cutoff. Now actually searches for the smallest
+  feature count whose cross-validated accuracy is within a small tolerance
+  (default 0.5pp) of the best accuracy any subset size achieves - printed
+  as a full accuracy-vs-feature-count curve, so the choice is visible, not
+  a fixed heuristic. In testing this dropped 41 features to as few as 7
+  with no honest accuracy loss.
+- **Model Selection**: unchanged - RandomForest vs. XGBoost/LightGBM (if
+  installed) vs. soft-voting vs. accuracy-weighted ensembles, compared via
+  GroupKFold, best one wins.
+- **Probability Calibration**: unchanged - Platt/sigmoid scaling via
+  `CalibratedClassifierCV(ensemble=False)` to keep the model small.
+- **Threshold Optimization**: unchanged - searches for the
+  balanced-accuracy/F1/accuracy-optimal thresholds instead of assuming 0.5.
+- **Prediction**: `predict.py` / `app.py` load `model.pkl` and run the
+  saved scaler -> selected-feature-subset -> calibrated model -> threshold,
+  in that order.
+
+## Robustness checks (new)
+Verified directly (not just described) against: standard color JPEG,
+grayscale PNG, RGBA PNG with alpha channel, portrait orientation, landscape
+orientation, an already-decoded in-memory array (what `app.py` passes),
+a corrupted/garbage file, a missing file, a too-small (4×4) image, and a
+blank/near-uniform image. Corrupted or degenerate images are now skipped
+with a clear logged reason during training (rather than crashing the run
+or silently producing garbage features), and `predict.py`/`app.py` surface
+the same clear error for a single bad input.
+
+## What changed since the previous version (short version)
+This request's overlap with the already-implemented pipeline (classifier
+comparison, ensembling, GroupKFold, calibration, threshold search, most of
+error analysis) was large, so I only changed what was genuinely missing:
+added the `preprocessing.py` stage and its robustness checks, replaced the
+fixed-percentage feature selection with an actual smallest-stable-subset
+search, added the probability-distribution plot to error analysis, and
+made the pipeline stages explicit in logs/docstrings/code structure.
+Everything else (model comparison, calibration, threshold optimization,
+confusion matrix/ROC/PR/feature-importance plots, FP/FN dumps) was already
+in place and is unchanged.
+
 ## What I'd improve with more time
 - **Screen-bezel/rectangle detection** (Hough-line/contour analysis).
 - **Recursive feature elimination (RFE)** as a second feature-selection
