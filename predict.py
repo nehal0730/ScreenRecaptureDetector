@@ -71,6 +71,9 @@ def five_crops(img):
 #     prob_screen = bundle["model"].predict_proba(feats_s)[0, 1]
 #     return float(prob_screen)
 
+import time
+start = time.perf_counter()
+
 def predict(image_path, bundle):
     img = cv2.imread(image_path)
 
@@ -98,6 +101,9 @@ def predict(image_path, bundle):
         probs.append(p)
 
     return float(np.mean(probs))
+
+elapsed = (time.perf_counter()-start)*1000
+print(elapsed)
 
 
 def main():

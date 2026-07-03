@@ -15,7 +15,7 @@ env/
 # =========================
 # Model Files
 # =========================
-*.pkl
+hybrid_cnn_head.pkl
 *.joblib
 
 # =========================
@@ -27,7 +27,8 @@ data_augmented/
 # =========================
 # Error Analysis Outputs
 # =========================
-error_analysis/
+error_analysis/false_negatives/
+error_analysis/false_positives/
 
 catboost_info/
 

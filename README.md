@@ -3,10 +3,30 @@
 ## Approach
 No deep model, no GPU, by default. 41 hand-crafted features feed into a
 pipeline that automatically: ranks + prunes features, compares
-RandomForest/XGBoost/LightGBM plus soft-voting/weighted-average ensembles,
+RandomForest/XGBoost/LightGBM/CatBoost plus soft-voting/weighted-average ensembles,
 picks the best by honest group-aware cross-validation, optimizes the
 decision threshold instead of assuming 0.5, calibrates the output
 probabilities, and dumps error-analysis plots + misclassified images.
+
+## How to run
+pip install -r requirements.txt
+
+# 1. Put your photos in data/real/ and data/screen/
+
+# 2. Expand the dataset offline
+python augment.py --data_dir data --out_dir data_augmented --target_total 550
+
+# 3. Train (prints honest CV accuracy, saves model.pkl + error_analysis/)
+python train.py --data_dir data_augmented --group_cv
+
+# 4. Predict on a single image
+python predict.py some_photo.jpg --label --timeit
+
+# 5. Live camera demo
+python app.py
+open http://127.0.0.1:5000
+
+I have already uploaded model.pkl so just run Step-4, 5
 
 ### Features (41 total)
 - **Moire/periodicity (FFT)**, computed at **3 scales** (full/half/quarter
@@ -208,17 +228,6 @@ with a clear logged reason during training (rather than crashing the run
 or silently producing garbage features), and `predict.py`/`app.py` surface
 the same clear error for a single bad input.
 
-## What changed since the previous version (short version)
-This request's overlap with the already-implemented pipeline (classifier
-comparison, ensembling, GroupKFold, calibration, threshold search, most of
-error analysis) was large, so I only changed what was genuinely missing:
-added the `preprocessing.py` stage and its robustness checks, replaced the
-fixed-percentage feature selection with an actual smallest-stable-subset
-search, added the probability-distribution plot to error analysis, and
-made the pipeline stages explicit in logs/docstrings/code structure.
-Everything else (model comparison, calibration, threshold optimization,
-confusion matrix/ROC/PR/feature-importance plots, FP/FN dumps) was already
-in place and is unchanged.
 
 ## What I'd improve with more time
 - **Screen-bezel/rectangle detection** (Hough-line/contour analysis).
