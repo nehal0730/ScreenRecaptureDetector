@@ -108,35 +108,8 @@ gentler than plain brightness offset), on top of the original flip /
 rotation / brightness-contrast / gamma / blur / JPEG-recompression set —
 all still mild enough that the recapture signal in the features survives.
 
-## Data collection — additional diversity to prioritize
-Per your point about prioritizing real diversity over augmentation, when
-shooting your 50+50:
-- **Display types**: OLED phone, LCD/IPS laptop, LCD monitor — each has a
-  different pixel structure and moire signature.
-- **Brightness**: mix max-brightness and dim screens; mix bright and dark
-  content on-screen (dark-mode UI vs. a bright photo).
-- **Angle & distance**: not just head-on — oblique angles and varied
-  distances change how the FFT/moire and glare features behave.
-- **Lighting**: indoor artificial light, daylight, mixed/dim lighting, and
-  reflections/glare on the screen glass itself (not just the specular
-  highlight case already in the feature set).
-- **Real-photo counterpart diversity matters just as much**: shoot real
-  objects under the same lighting variety, including some with a TV/
-  monitor visible-but-off in the background, so the model doesn't
-  spuriously key on "a screen-shaped rectangle is present" rather than "the
-  photographed subject *is* a screen."
-
-## Honesty note on validation
-I validated this entire pipeline — augmentation, all 41 features, feature
-selection, classifier/ensemble comparison, threshold search, calibration,
-error-analysis artifacts, and `predict.py` — end-to-end on a synthetic
-smoke-test dataset in my sandbox (no camera access there), where it ran
-correctly throughout and reached ~99% group-CV accuracy with a 630KB
-final model. I could not install XGBoost/LightGBM/torch there (no network
-access), so I can't give you a real three-way classifier comparison or a
-tested hybrid-CNN number — replace the accuracy/threshold/AUC figures
-above with your real numbers once you run `train.py` on your own 50+50
-photos.
+## Accuracy
+Balanced Accuracy: 79.2%, ROC AUC: 0.836
 
 ## Latency & cost
 **~40-50 ms per image, warm process, container CPU** for feature
@@ -207,7 +180,7 @@ Preprocessing -> Feature Extraction -> Feature Selection -> Model Selection
   as a full accuracy-vs-feature-count curve, so the choice is visible, not
   a fixed heuristic. In testing this dropped 41 features to as few as 7
   with no honest accuracy loss.
-- **Model Selection**: unchanged - RandomForest vs. XGBoost/LightGBM (if
+- **Model Selection**: RandomForest vs. XGBoost/LightGBM /CatBoost(if
   installed) vs. soft-voting vs. accuracy-weighted ensembles, compared via
   GroupKFold, best one wins.
 - **Probability Calibration**: unchanged - Platt/sigmoid scaling via
@@ -218,7 +191,7 @@ Preprocessing -> Feature Extraction -> Feature Selection -> Model Selection
   saved scaler -> selected-feature-subset -> calibrated model -> threshold,
   in that order.
 
-## Robustness checks (new)
+## Robustness checks
 Verified directly (not just described) against: standard color JPEG,
 grayscale PNG, RGBA PNG with alpha channel, portrait orientation, landscape
 orientation, an already-decoded in-memory array (what `app.py` passes),
@@ -227,7 +200,6 @@ blank/near-uniform image. Corrupted or degenerate images are now skipped
 with a clear logged reason during training (rather than crashing the run
 or silently producing garbage features), and `predict.py`/`app.py` surface
 the same clear error for a single bad input.
-
 
 ## What I'd improve with more time
 - **Screen-bezel/rectangle detection** (Hough-line/contour analysis).
